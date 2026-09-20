@@ -1,11 +1,47 @@
 """The CrewAI part of the app: one agent, one task, one crew."""
 import os
+import sys
 
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from ddgs import DDGS
 
 MODEL = "groq/openai/gpt-oss-120b"  # "groq/" tells CrewAI which provider to use
+
+
+def _disable_cache_breakpoint():
+    """Workaround for a known CrewAI bug: some versions add a 'cache_breakpoint'
+    field to messages (meant for Anthropic), and Groq rejects it with a 400 error.
+    This removes that field. It is harmless if your CrewAI version is already fixed."""
+    # 1) Make the marking function do nothing everywhere it was imported
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("crewai") and mod is not None:
+            try:
+                if hasattr(mod, "mark_cache_breakpoint"):
+                    setattr(mod, "mark_cache_breakpoint", lambda msg, *a, **k: msg)
+            except Exception:
+                pass
+
+    # 2) Also strip the field from every message just before it is sent
+    original = getattr(LLM, "_format_messages_for_provider", None)
+    if original is None or getattr(original, "_patched", False):
+        return
+
+    def patched(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        if isinstance(result, list):
+            return [
+                {k: v for k, v in m.items() if k != "cache_breakpoint"}
+                if isinstance(m, dict) else m
+                for m in result
+            ]
+        return result
+
+    patched._patched = True
+    LLM._format_messages_for_provider = patched
+
+
+_disable_cache_breakpoint()
 
 
 @tool("web_search")
